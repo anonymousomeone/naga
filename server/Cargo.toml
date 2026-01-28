@@ -1,0 +1,13 @@
+[package]
+name = "naga-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shared = { path = "../shared" }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+futures-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
