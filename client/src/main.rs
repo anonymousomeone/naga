@@ -30,6 +30,7 @@ struct Nagger {
     events: Arc<Mutex<Vec<shared::Event>>>,
     connected: bool,
     hook_enabled: bool,
+    chat_enabled: bool,
     keyboard: Keyboard,
     rx: tokio::sync::mpsc::Receiver<ClientEvent>,
     tx: tokio::sync::mpsc::Sender<ClientCommand>,
@@ -76,6 +77,7 @@ impl Nagger {
             events,
             connected: false,
             hook_enabled: false,
+            chat_enabled: false,
             keyboard: Keyboard::new(),
             rx,
             tx,
@@ -93,37 +95,51 @@ impl eframe::App for Nagger {
             .show(ctx, |ui| {
             if self.connected {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.message)
-                        .hint_text("Nag")
-                    );
+                    ui.horizontal(|ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.message)
+                            .hint_text("Nag")
+                        );
+        
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            let message = NagaMessage {
+                                text: self.message.clone(),
+                                user: self.user.clone(),
+                            };
+        
+                            let message_event = shared::Event {
+                                event_type: shared::EventType::Message(message),
+                                time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+                            };
     
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        let message = NagaMessage {
-                            text: self.message.clone(),
-                            user: self.user.clone(),
-                        };
+                            let string = serde_json::to_string(&message_event).unwrap();
+                            let payload = Utf8Bytes::from(string);
+                            let msg = Message::Text(payload);
+                            
+                            let tx = self.tx.clone();
+                            tokio::spawn(async move {
+                                tx.send(ClientCommand::Send(msg)).await.unwrap();
+                            });
+                            self.message = String::new();
+                            self.events.lock().unwrap().push(message_event);
+                        }
     
-                        let message_event = shared::Event {
-                            event_type: shared::EventType::Message(message),
-                            time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                        };
-
-                        let string = serde_json::to_string(&message_event).unwrap();
-                        let payload = Utf8Bytes::from(string);
-                        let msg = Message::Text(payload);
-                        
-                        let tx = self.tx.clone();
-                        tokio::spawn(async move {
-                            tx.send(ClientCommand::Send(msg)).await.unwrap();
-                        });
-                        self.message = String::new();
-                        self.events.lock().unwrap().push(message_event);
-                    }
-
-                    if self.hook_enabled {
-                        response.request_focus();
-                    }
+                        if self.hook_enabled {
+                            response.request_focus();
+                        }
+    
+                        let response;
+                        if self.chat_enabled {
+                            response = ui.button("Enabled");
+                        } else {
+                            response = ui.button("Disabled");
+                        }
+    
+                        if response.clicked() {
+                            self.chat_enabled = !self.chat_enabled;
+                            set_enabled(self.chat_enabled);
+                        }
+                    });
 
                     ui.separator();
 
@@ -355,6 +371,13 @@ fn disable_hook(nagger: &mut Nagger, _raw_input: &mut egui::RawInput) {
     #[cfg(target_os = "linux")]
     <keyboard::linux_hook::LinuxKeyboardHook as keyboard::KeyboardHook>::unhook();
     _raw_input.focused = false;
+}
+
+fn set_enabled(enabled: bool) {
+    #[cfg(target_os = "windows")]
+    <keyboard::windows_hook::WindowsKeyboardHook as keyboard::KeyboardHook>::set_chat_enabled(enabled);
+    #[cfg(target_os = "linux")]
+    <keyboard::linux_hook::LinuxKeyboardHook as keyboard::KeyboardHook>::set_chat_enabled(enabled);
 }
 
 fn key_to_str(key: &Key, shift: bool) -> Option<&str> {

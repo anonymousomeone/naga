@@ -27,6 +27,7 @@ pub trait KeyboardHook {
     fn hook();
     fn unhook();
     fn uninstall_hook(&self);
+    fn set_chat_enabled(enabled: bool);
 }
 
 // #[derive(Clone, Copy, PartialEq)]
@@ -51,6 +52,7 @@ pub trait KeyboardHook {
 // }
 static mut CHANNEL: LazyLock<(Sender<(u32, bool)>, Receiver<(u32, bool)>)> = LazyLock::new(|| {mpsc::channel() });
 static mut ENABLED: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::from(false));
+static mut CHAT_ENABLED: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::from(false));
 
 #[cfg(target_os = "linux")]
 pub mod linux_hook {
@@ -220,6 +222,8 @@ pub mod linux_hook {
 
 #[cfg(target_os = "windows")]
 pub mod windows_hook {
+    use crate::keyboard::CHAT_ENABLED;
+
     use super::KeyboardHook;
     use super::CHANNEL;
     use super::ENABLED;
@@ -270,6 +274,13 @@ pub mod windows_hook {
                 state_changes: Vec::new(),
                 hook,
             }
+        }
+
+        fn set_chat_enabled(enabled: bool) {
+            #[allow(static_mut_refs)]
+            unsafe{ 
+                *CHAT_ENABLED.lock().unwrap() = enabled;
+            };
         }
     
         fn poll(&mut self) -> Vec<Event> {
@@ -526,6 +537,8 @@ pub mod windows_hook {
     unsafe extern "system" fn hook_callback(code: c_int, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         #[allow(static_mut_refs)]
         let enabled = unsafe{ ENABLED.lock().unwrap().clone() };
+        #[allow(static_mut_refs)]
+        let chat_enabled = unsafe{ CHAT_ENABLED.lock().unwrap().clone() };
     
         if code >= HC_ACTION {
             let kb_struct = unsafe { *(lparam as *const KBDLLHOOKSTRUCT) };
@@ -536,14 +549,14 @@ pub mod windows_hook {
             match event_type {
                 #[allow(non_snake_case)]
                 WM_KEYDOWN | WM_SYSKEYDOWN => {
-                    if enabled && (windows_vk_to_egui(key_code).is_some() || is_modifier_key(key_code)) {
+                    if chat_enabled && enabled && (windows_vk_to_egui(key_code).is_some() || is_modifier_key(key_code)) {
                         #[allow(static_mut_refs)]
                         unsafe { CHANNEL.0.send((key_code, true)).unwrap() };
                         return 1;
                     }
     
                     // is this key fwd slash (toggle interception)
-                    if key_code == 0xBF {
+                    if chat_enabled && key_code == 0xBF {
                         #[allow(static_mut_refs)]
                         unsafe { CHANNEL.0.send((key_code, true)).unwrap() };
                         return 1;
@@ -551,14 +564,14 @@ pub mod windows_hook {
                 },
                 #[allow(non_snake_case)]
                 WM_KEYUP | WM_SYSKEYUP => {
-                    if enabled && (windows_vk_to_egui(key_code).is_some() || is_modifier_key(key_code)) {
+                    if chat_enabled && enabled && (windows_vk_to_egui(key_code).is_some() || is_modifier_key(key_code)) {
                         #[allow(static_mut_refs)]
                         unsafe { CHANNEL.0.send((key_code, false)).unwrap() };
                         return 1;
                     }
     
                     // is this key fwd slash (toggle interception)
-                    if key_code == 0xBF {
+                    if chat_enabled && key_code == 0xBF {
                         #[allow(static_mut_refs)]
                         unsafe { CHANNEL.0.send((key_code, false)).unwrap() };
                         return 1;
