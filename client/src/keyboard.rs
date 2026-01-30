@@ -551,7 +551,7 @@ pub mod windows_hook {
                 },
                 #[allow(non_snake_case)]
                 WM_KEYUP | WM_SYSKEYUP => {
-                    if enabled && windows_vk_to_egui(key_code).is_some() || is_modifier_key(key_code) {
+                    if enabled && (windows_vk_to_egui(key_code).is_some() || is_modifier_key(key_code)) {
                         #[allow(static_mut_refs)]
                         unsafe { CHANNEL.0.send((key_code, false)).unwrap() };
                         return 1;
