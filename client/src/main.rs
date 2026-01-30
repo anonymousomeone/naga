@@ -313,7 +313,7 @@ impl eframe::App for Nagger {
                     match key {
                         egui::Key::Slash => enable_hook(self, _raw_input),
                         egui::Key::Enter => self.hook_enabled = false,
-                        egui::Key::Escape => disable_hook(self, _raw_input),
+                        egui::Key::Escape => self.hook_enabled = false,
                         _ => {},
                     };
 
@@ -325,6 +325,7 @@ impl eframe::App for Nagger {
                 } else {
                     match key {
                         egui::Key::Enter => disable_hook(self, _raw_input),
+                        egui::Key::Escape => disable_hook(self, _raw_input),
                         _ => {},
                     }
                 }
