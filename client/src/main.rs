@@ -10,24 +10,27 @@
 //!
 //! You can use this example together with the `server` example.
 
-use std::{sync::{Arc}, time::{SystemTime, UNIX_EPOCH}};
+use std::{sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 
-use eframe::egui::{self, Color32, FontFamily, FontId, FontSelection, Rgba, RichText, Style, TextFormat, Vec2, text::LayoutJob};
+use eframe::egui::{self, Color32, FontFamily, FontId, FontSelection, Key, RawInput, Rgba, RichText, Style, TextFormat, Vec2, text::LayoutJob};
 use std::sync::Mutex;
 use tokio_tungstenite::tungstenite::{Utf8Bytes, protocol::Message};
 
-use shared::{Color, Event, Message as NagaMessage, User};
+use shared::{Color, Message as NagaMessage, User};
 
-use crate::network::{ClientCommand, ClientEvent, Network};
+use crate::{keyboard::{Keyboard, KeyboardHook, windows_hook::WindowsKeyboardHook}, network::{ClientCommand, ClientEvent, Network}};
 
 mod network;
+mod keyboard;
 
 struct Nagger {
     user: User,
     address: String,
     message: String,
-    events: Arc<Mutex<Vec<Event>>>,
+    events: Arc<Mutex<Vec<shared::Event>>>,
     connected: bool,
+    hook_enabled: bool,
+    keyboard: Keyboard,
     rx: tokio::sync::mpsc::Receiver<ClientEvent>,
     tx: tokio::sync::mpsc::Sender<ClientCommand>,
 }
@@ -35,7 +38,7 @@ struct Nagger {
 impl Nagger {
     fn new(
         cc: &eframe::CreationContext<'_>,
-        events: Arc<Mutex<Vec<Event>>>,
+        events: Arc<Mutex<Vec<shared::Event>>>,
         rx: tokio::sync::mpsc::Receiver<ClientEvent>,
         tx: tokio::sync::mpsc::Sender<ClientCommand>,
         mut msg_rx: tokio::sync::mpsc::Receiver<ClientEvent>,
@@ -72,6 +75,8 @@ impl Nagger {
             message: String::new(),
             events,
             connected: false,
+            hook_enabled: false,
+            keyboard: Keyboard::new(),
             rx,
             tx,
         }
@@ -80,7 +85,10 @@ impl Nagger {
 
 impl eframe::App for Nagger {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.request_repaint_after(Duration::from_millis(16));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().outer_margin(egui::Margin::symmetric(15, 5)))
+            .show(ctx, |ui| {
             if self.connected {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     let response = ui.add(
@@ -94,12 +102,11 @@ impl eframe::App for Nagger {
                             user: self.user.clone(),
                         };
     
-                        let message_event = Event {
+                        let message_event = shared::Event {
                             event_type: shared::EventType::Message(message),
                             time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
                         };
 
-                        
                         let string = serde_json::to_string(&message_event).unwrap();
                         let payload = Utf8Bytes::from(string);
                         let msg = Message::Text(payload);
@@ -110,6 +117,10 @@ impl eframe::App for Nagger {
                         });
                         self.message = String::new();
                         self.events.lock().unwrap().push(message_event);
+                    }
+
+                    if self.hook_enabled {
+                        response.request_focus();
                     }
 
                     ui.separator();
@@ -258,7 +269,7 @@ impl eframe::App for Nagger {
                 match self.rx.try_recv() {
                     Ok(ClientEvent::Connected) => {
                         self.connected = true;
-                        let connected_event = Event {
+                        let connected_event = shared::Event {
                             event_type: shared::EventType::Joined(self.user.clone()),
                             time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
                         };
@@ -271,7 +282,7 @@ impl eframe::App for Nagger {
                         let mut events = self.events.lock().unwrap();
                         let user = User { username: String::from("SYS"), color: Color { r: 255, g: 0, b: 0 }, system: true };
                         let m = NagaMessage { text: format!("Hello {}!", self.user.username), user };
-                        let event = Event {
+                        let event = shared::Event {
                             event_type: shared::EventType::Message(m),
                             time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
                         };
@@ -282,15 +293,120 @@ impl eframe::App for Nagger {
                             tx.send(ClientCommand::Send(msg)).await.unwrap();
                         });
                     },
-                    Ok(ClientEvent::Message) => {
-                        ctx.request_repaint();
-                    }
                     _ => {}
                 }
             }
             
        });
 
+    }
+    
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {
+        let events = self.keyboard.hook.poll();
+        let mut result = Vec::new();
+
+        for event in events {
+            if let egui::Event::Key { key, pressed, modifiers, .. } = event {
+                if pressed {
+                    match key {
+                        egui::Key::Slash => enable_hook(self, _raw_input),
+                        egui::Key::Enter => self.hook_enabled = false,
+                        egui::Key::Escape => disable_hook(self, _raw_input),
+                        _ => {},
+                    };
+
+                    if let Some(key_str) = key_to_str(&key, modifiers.shift) {
+                        let event = egui::Event::Text(key_str.to_string());
+
+                        result.push(event);
+                    }
+                } else {
+                    match key {
+                        egui::Key::Enter => disable_hook(self, _raw_input),
+                        _ => {},
+                    }
+                }
+            }
+
+            result.push(event);
+        }
+
+        _raw_input.focused = self.hook_enabled;
+        _raw_input.events.append(&mut result);
+    }
+}
+
+fn enable_hook(nagger: &mut Nagger, _raw_input: &mut egui::RawInput) {
+    nagger.hook_enabled = true;
+    #[cfg(target_os = "windows")]
+    <keyboard::windows_hook::WindowsKeyboardHook as keyboard::KeyboardHook>::hook();
+    #[cfg(target_os = "linux")]
+    <keyboard::linux_hook::LinuxKeyboardHook as keyboard::KeyboardHook>::hook();
+    _raw_input.focused = true;
+}
+
+fn disable_hook(nagger: &mut Nagger, _raw_input: &mut egui::RawInput) {
+    nagger.hook_enabled = false;
+    #[cfg(target_os = "windows")]
+    <keyboard::windows_hook::WindowsKeyboardHook as keyboard::KeyboardHook>::unhook();
+    #[cfg(target_os = "linux")]
+    <keyboard::linux_hook::LinuxKeyboardHook as keyboard::KeyboardHook>::unhook();
+    _raw_input.focused = false;
+}
+
+fn key_to_str(key: &Key, shift: bool) -> Option<&str> {
+    match key {
+        Key::Space => Some(" "),
+
+        Key::Comma => if shift { Some("<") } else { Some(",") },
+        Key::Period => if shift { Some(">") } else { Some(".") },
+        Key::Backtick => if shift { Some("~") } else { Some("`") },
+        Key::OpenBracket => if shift { Some("{") } else { Some("[") },
+        Key::CloseBracket => if shift { Some("}") } else { Some("]") },
+        Key::Semicolon => if shift { Some(":") } else { Some(";") },
+        Key::Quote => if shift { Some("\"") } else { Some("'") },
+        Key::Backslash => if shift { Some("|") } else { Some("\\") },
+
+        Key::Num0 => if shift { Some(")") } else { Some("0") },
+        Key::Num1 => if shift { Some("!") } else { Some("1") },
+        Key::Num2 => if shift { Some("@") } else { Some("2") },
+        Key::Num3 => if shift { Some("#") } else { Some("3") },
+        Key::Num4 => if shift { Some("$") } else { Some("4") },
+        Key::Num5 => if shift { Some("%") } else { Some("5") },
+        Key::Num6 => if shift { Some("^") } else { Some("6") },
+        Key::Num7 => if shift { Some("&") } else { Some("7") },
+        Key::Num8 => if shift { Some("*") } else { Some("8") },
+        Key::Num9 => if shift { Some("(") } else { Some("9") },
+        Key::Minus => if shift { Some("_") } else { Some("-") },
+        Key::Equals => if shift { Some("+") } else { Some("=") },
+
+        Key::A => if shift { Some("A") } else { Some("a") },
+        Key::B => if shift { Some("B") } else { Some("b") },
+        Key::C => if shift { Some("C") } else { Some("c") },
+        Key::D => if shift { Some("D") } else { Some("d") },
+        Key::E => if shift { Some("E") } else { Some("e") },
+        Key::F => if shift { Some("F") } else { Some("f") },
+        Key::G => if shift { Some("G") } else { Some("g") },
+        Key::H => if shift { Some("H") } else { Some("h") },
+        Key::I => if shift { Some("I") } else { Some("i") },
+        Key::J => if shift { Some("J") } else { Some("j") },
+        Key::K => if shift { Some("K") } else { Some("k") },
+        Key::L => if shift { Some("L") } else { Some("l") },
+        Key::M => if shift { Some("M") } else { Some("m") },
+        Key::N => if shift { Some("N") } else { Some("n") },
+        Key::O => if shift { Some("O") } else { Some("o") },
+        Key::P => if shift { Some("P") } else { Some("p") },
+        Key::Q => if shift { Some("Q") } else { Some("q") },
+        Key::R => if shift { Some("R") } else { Some("r") },
+        Key::S => if shift { Some("S") } else { Some("s") },
+        Key::T => if shift { Some("T") } else { Some("t") },
+        Key::U => if shift { Some("U") } else { Some("u") },
+        Key::V => if shift { Some("V") } else { Some("v") },
+        Key::W => if shift { Some("W") } else { Some("w") },
+        Key::X => if shift { Some("X") } else { Some("x") },
+        Key::Y => if shift { Some("Y") } else { Some("y") },
+        Key::Z => if shift { Some("Z") } else { Some("z") },
+        _ => None,
     }
 }
 
@@ -307,8 +423,16 @@ async fn main() {
 
     let icon_data = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/naga.png"))
         .expect("Failed to load icon data");
+    let viewport = egui::ViewportBuilder {
+        icon: Some(Arc::new(icon_data)),
+        transparent: Some(true),
+        window_level: Some(egui::WindowLevel::AlwaysOnTop),
+        // mouse_passthrough: Some(true),
+        ..Default::default()
+    };
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_icon(icon_data),
+        viewport,
         ..Default::default()
     };
 
