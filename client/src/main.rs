@@ -101,7 +101,7 @@ impl eframe::App for Nagger {
                             .hint_text("Nag")
                         );
         
-                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && self.message != String::new() {
                             let message = NagaMessage {
                                 text: self.message.clone(),
                                 user: self.user.clone(),
@@ -278,7 +278,11 @@ impl eframe::App for Nagger {
 
                 if ui.button("Connect").clicked() {
                     let tx = self.tx.clone();
-                    let address = self.address.clone();
+                    let mut address = self.address.clone();
+                    if address.is_empty() {
+                        address = String::from("ws://127.0.0.1:6967");
+                    }
+
                     tokio::spawn(async move {
                         let _ = tx.send(ClientCommand::Connect(address)).await;
                     });
