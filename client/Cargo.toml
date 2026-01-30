@@ -12,6 +12,8 @@ futures-channel = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 eframe = { workspace = true }
+egui_extras = { workspace = true }
+egui-twemoji = { workspace = true }
 ctrlc = { workspace = true }
 evdev = { workspace = true }
 winapi = { workspace = true }

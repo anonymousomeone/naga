@@ -10,24 +10,27 @@
 //!
 //! You can use this example together with the `server` example.
 
-use std::{sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{collections::HashMap, sync::Arc};
 
-use eframe::egui::{self, Color32, FontFamily, FontId, FontSelection, Key, Rgba, RichText, Style, TextFormat, text::LayoutJob};
+use eframe::egui;
+use eframe::egui::Key;
 use std::sync::Mutex;
-use tokio_tungstenite::tungstenite::{Utf8Bytes, protocol::Message};
 
-use shared::{Color, Message as NagaMessage, User};
+use shared::{Color, User};
 
 use crate::{keyboard::{Keyboard, KeyboardHook}, network::{ClientCommand, ClientEvent, Network}};
 
 mod network;
 mod keyboard;
+mod ui;
+mod emoji;
 
 struct Nagger {
     user: User,
     address: String,
     message: String,
     events: Arc<Mutex<Vec<shared::Event>>>,
+    emojis: HashMap<String, String>,
     connected: bool,
     hook_enabled: bool,
     chat_enabled: bool,
@@ -75,6 +78,7 @@ impl Nagger {
             address: String::new(),
             message: String::new(),
             events,
+            emojis: emoji::create_discord_emoji_map(),
             connected: false,
             hook_enabled: false,
             chat_enabled: false,
@@ -87,240 +91,7 @@ impl Nagger {
 
 impl eframe::App for Nagger {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.set_visuals(egui::Visuals::dark());
-        ctx.request_repaint_after(Duration::from_millis(16));
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().outer_margin(egui::Margin::symmetric(15, 5)))
-            .show(ctx, |ui| {
-            if self.connected {
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.horizontal(|ui| {
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut self.message)
-                            .hint_text("Nag")
-                        );
-        
-                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && self.message != String::new() {
-                            let message = NagaMessage {
-                                text: self.message.clone(),
-                                user: self.user.clone(),
-                            };
-        
-                            let message_event = shared::Event {
-                                event_type: shared::EventType::Message(message),
-                                time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                            };
-    
-                            let string = serde_json::to_string(&message_event).unwrap();
-                            let payload = Utf8Bytes::from(string);
-                            let msg = Message::Text(payload);
-                            
-                            let tx = self.tx.clone();
-                            tokio::spawn(async move {
-                                tx.send(ClientCommand::Send(msg)).await.unwrap();
-                            });
-                            self.message = String::new();
-                            self.events.lock().unwrap().push(message_event);
-                        }
-    
-                        if self.hook_enabled {
-                            response.request_focus();
-                        }
-    
-                        let response;
-                        if self.chat_enabled {
-                            response = ui.button("Enabled");
-                        } else {
-                            response = ui.button("Disabled");
-                        }
-    
-                        if response.clicked() {
-                            self.chat_enabled = !self.chat_enabled;
-                            set_enabled(self.chat_enabled);
-                        }
-                    });
-
-                    ui.separator();
-
-                    egui::ScrollArea::vertical()
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                        .scroll([false, true])
-                        // .scroll_offset(Vec2::new(0.0, -1.0))
-                        .auto_shrink([false, false])
-                        .stick_to_bottom(true)
-                        .show(ui, |ui| {
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            let events = self.events.lock().unwrap();
-                            for event in events.iter() {
-                                match &event.event_type {
-                                    shared::EventType::Message(msg) => {
-                                        let user = &msg.user;
-                                        let color = Rgba::from_rgb(
-                                            user.color.r as f32 / 255.0, 
-                                            user.color.g as f32 / 255.0, 
-                                            user.color.b as f32 / 255.0
-                                        );
-        
-                                        let style = Style::default();
-                                        let mut job = LayoutJob::default();
-                                        RichText::new(user.username.clone()).color(color)
-                                            .append_to(
-                                                &mut job, 
-                                                &style, 
-                                                FontSelection::Default, 
-                                                egui::Align::Min
-                                        );
-        
-                                        if user.system {
-                                            job.append(
-                                                &(String::from(" >> ") + &msg.text),
-                                                0.0,
-                                                TextFormat {
-                                                    font_id: FontId::new(14.0, FontFamily::Proportional),
-                                                    color: Color32::WHITE,
-                                                    ..Default::default()
-                                                },
-                                            );
-                                        } else {
-                                            job.append(
-                                                &(String::from(": ") + &msg.text),
-                                                0.0,
-                                                TextFormat {
-                                                    font_id: FontId::new(14.0, FontFamily::Proportional),
-                                                    color: Color32::WHITE,
-                                                    ..Default::default()
-                                                },
-                                            );
-                                        }
-        
-                                        ui.label(job);
-                                    },
-                                    shared::EventType::Joined(user) => {
-                                        let color = Rgba::from_rgb(
-                                            user.color.r as f32 / 255.0, 
-                                            user.color.g as f32 / 255.0, 
-                                            user.color.b as f32 / 255.0
-                                        );
-        
-                                        let style = Style::default();
-                                        let mut job = LayoutJob::default();
-                                        RichText::new(user.username.clone()).color(color)
-                                            .append_to(
-                                                &mut job, 
-                                                &style, 
-                                                FontSelection::Default, 
-                                                egui::Align::Min
-                                            );
-                                        job.append(
-                                            &(String::from("joined!")),
-                                            4.0,
-                                            TextFormat {
-                                                font_id: FontId::new(14.0, FontFamily::Proportional),
-                                                color: Color32::WHITE,
-                                                ..Default::default()
-                                            },
-                                        );
-        
-                                        ui.label(job);
-                                    },
-                                    shared::EventType::Left(user) => {
-                                        let color = Rgba::from_rgb(
-                                            user.color.r as f32 / 255.0, 
-                                            user.color.g as f32 / 255.0, 
-                                            user.color.b as f32 / 255.0
-                                        );
-        
-                                        let style = Style::default();
-                                        let mut job = LayoutJob::default();
-                                        RichText::new(user.username.clone()).color(color)
-                                            .append_to(
-                                                &mut job, 
-                                                &style, 
-                                                FontSelection::Default, 
-                                                egui::Align::Min
-                                            );
-                                        job.append(
-                                            &(String::from("left!")),
-                                            4.0,
-                                            TextFormat {
-                                                font_id: FontId::new(14.0, FontFamily::Proportional),
-                                                color: Color32::WHITE,
-                                                ..Default::default()
-                                            },
-                                        );
-        
-                                        ui.label(job);
-                                    }
-                                }
-                            }
-                        });
-                    });
-                });
-            } else {
-                ui.horizontal(|ui| {
-                    ui.label("Username");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.user.username)
-                        .hint_text("Nagger")
-                    );
-
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Url");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.address)
-                        .hint_text("ws://[server.served]:[port]")
-                    );
-                });
-
-                ui.separator();
-
-                if ui.button("Connect").clicked() {
-                    let tx = self.tx.clone();
-                    let mut address = self.address.clone();
-                    if address.is_empty() {
-                        address = String::from("ws://127.0.0.1:6967");
-                    }
-
-                    tokio::spawn(async move {
-                        let _ = tx.send(ClientCommand::Connect(address)).await;
-                    });
-                }
-
-                match self.rx.try_recv() {
-                    Ok(ClientEvent::Connected) => {
-                        self.connected = true;
-                        let connected_event = shared::Event {
-                            event_type: shared::EventType::Joined(self.user.clone()),
-                            time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                        };
-    
-                        let string = serde_json::to_string(&connected_event).unwrap();
-                        let payload = Utf8Bytes::from(string);
-                        let msg = Message::Text(payload);
-    
-                        // add hello msg
-                        let mut events = self.events.lock().unwrap();
-                        let user = User { username: String::from("SYS"), color: Color { r: 255, g: 0, b: 0 }, system: true };
-                        let m = NagaMessage { text: format!("Hello {}!", self.user.username), user };
-                        let event = shared::Event {
-                            event_type: shared::EventType::Message(m),
-                            time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                        };
-                        events.push(event);
-    
-                        let tx = self.tx.clone();
-                        tokio::spawn(async move {
-                            tx.send(ClientCommand::Send(msg)).await.unwrap();
-                        });
-                    },
-                    _ => {}
-                }
-            }
-            
-       });
-
+        self.draw_ui(ctx, _frame);
     }
     
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {
@@ -377,13 +148,6 @@ fn disable_hook(nagger: &mut Nagger, _raw_input: &mut egui::RawInput) {
     _raw_input.focused = false;
 }
 
-fn set_enabled(enabled: bool) {
-    #[cfg(target_os = "windows")]
-    <keyboard::windows_hook::WindowsKeyboardHook as keyboard::KeyboardHook>::set_chat_enabled(enabled);
-    #[cfg(target_os = "linux")]
-    <keyboard::linux_hook::LinuxKeyboardHook as keyboard::KeyboardHook>::set_chat_enabled(enabled);
-}
-
 fn key_to_str(key: &Key, shift: bool) -> Option<&str> {
     match key {
         Key::Space => Some(" "),
@@ -393,9 +157,9 @@ fn key_to_str(key: &Key, shift: bool) -> Option<&str> {
         Key::Backtick => if shift { Some("~") } else { Some("`") },
         Key::OpenBracket => if shift { Some("{") } else { Some("[") },
         Key::CloseBracket => if shift { Some("}") } else { Some("]") },
+        Key::Backslash => if shift { Some("|") } else { Some("\\") },
         Key::Semicolon => if shift { Some(":") } else { Some(";") },
         Key::Quote => if shift { Some("\"") } else { Some("'") },
-        Key::Backslash => if shift { Some("|") } else { Some("\\") },
 
         Key::Num0 => if shift { Some(")") } else { Some("0") },
         Key::Num1 => if shift { Some("!") } else { Some("1") },
@@ -466,5 +230,12 @@ async fn main() {
         ..Default::default()
     };
 
-    eframe::run_native("Nagger", native_options, Box::new(|cc| Ok(Box::new(Nagger::new(cc, events.clone(), ev_rx, cmd_tx, msg_rx))))).unwrap();
+    eframe::run_native(
+        "Nagger", 
+        native_options, 
+        Box::new(|cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(Nagger::new(cc, events.clone(), ev_rx, cmd_tx, msg_rx)))
+        })
+    ).unwrap();
 }

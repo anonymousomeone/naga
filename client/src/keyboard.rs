@@ -21,6 +21,13 @@ impl Keyboard {
         }
     }
 }
+
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        self.hook.uninstall_hook();
+    }
+}
+
 pub trait KeyboardHook {
     fn new() -> Self;
     fn poll(&mut self) -> Vec<egui::Event>;
