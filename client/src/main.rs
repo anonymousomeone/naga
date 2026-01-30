@@ -12,13 +12,13 @@
 
 use std::{sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 
-use eframe::egui::{self, Color32, FontFamily, FontId, FontSelection, Key, RawInput, Rgba, RichText, Style, TextFormat, Vec2, text::LayoutJob};
+use eframe::egui::{self, Color32, FontFamily, FontId, FontSelection, Key, Rgba, RichText, Style, TextFormat, text::LayoutJob};
 use std::sync::Mutex;
 use tokio_tungstenite::tungstenite::{Utf8Bytes, protocol::Message};
 
 use shared::{Color, Message as NagaMessage, User};
 
-use crate::{keyboard::{Keyboard, KeyboardHook, windows_hook::WindowsKeyboardHook}, network::{ClientCommand, ClientEvent, Network}};
+use crate::{keyboard::{Keyboard, KeyboardHook}, network::{ClientCommand, ClientEvent, Network}};
 
 mod network;
 mod keyboard;
@@ -85,7 +85,9 @@ impl Nagger {
 
 impl eframe::App for Nagger {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_visuals(egui::Visuals::dark());
         ctx.request_repaint_after(Duration::from_millis(16));
+
         egui::CentralPanel::default()
             .frame(egui::Frame::new().outer_margin(egui::Margin::symmetric(15, 5)))
             .show(ctx, |ui| {
